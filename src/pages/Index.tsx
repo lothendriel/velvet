@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSeoMeta } from '@unhead/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNostr } from '@nostrify/react';
@@ -10,11 +10,13 @@ import {
 } from 'lucide-react';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { useAuthor } from '@/hooks/useAuthor';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useUploadFile } from '@/hooks/useUploadFile';
 import { useTheme } from '@/hooks/useTheme';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { nip19 } from 'nostr-tools';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 
 const topics = ['For you', 'Creator notes', 'Industry talk', 'Work & wellness'];
 const timeAgo = (timestamp: number) => {
@@ -47,6 +49,19 @@ function AgeGate({ onEnter }: { onEnter: () => void }) {
         <div className="age-footer"><span>Independent by nature.</span><span>Powered by Nostr <span className="purple-dot">●</span></span></div>
       </div>
     </main>
+  );
+}
+
+function CreatorDirectoryCard({ pubkey }: { pubkey: string }) {
+  const { data } = useAuthor(pubkey);
+  const displayName = data?.metadata?.display_name || data?.metadata?.name || `${pubkey.slice(0, 6)}…${pubkey.slice(-4)}`;
+  const picture = data?.metadata?.picture?.startsWith('https://') ? data.metadata.picture : undefined;
+  return (
+    <a className="directory-profile" href={`/${nip19.npubEncode(pubkey)}`}>
+      <Avatar className="directory-avatar"><AvatarImage src={picture} alt="" referrerPolicy="no-referrer" /><AvatarFallback>{displayName.slice(0, 1).toUpperCase()}</AvatarFallback></Avatar>
+      <span className="directory-profile-copy"><strong>{displayName}</strong><small>{data?.metadata?.about || `npub:${pubkey.slice(0, 8)}…`}</small></span>
+      <span className="self-identified-badge">Self-identified</span>
+    </a>
   );
 }
 
@@ -85,9 +100,12 @@ const Index = () => {
   const queryClient = useQueryClient();
   const { mutateAsync: publish, isPending, error } = useNostrPublish();
   const { mutateAsync: reactToEvent } = useNostrPublish();
+  const { mutateAsync: publishDirectoryList, isPending: isUpdatingDirectory } = useNostrPublish();
   const { mutateAsync: uploadFile, isPending: isUploading } = useUploadFile();
   const [attachments, setAttachments] = useState<Array<{ url: string; tags: string[][] }>>([]);
   const [creatorOpen, setCreatorOpen] = useState(false);
+  const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [directoryMessage, setDirectoryMessage] = useState('');
   const [profileDraft, setProfileDraft] = useState({ name: '', about: '', website: '', picture: '' });
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
@@ -105,6 +123,35 @@ const Index = () => {
     document.documentElement.classList.toggle('light', theme !== 'dark');
     document.documentElement.style.colorScheme = theme === 'dark' ? 'dark' : 'light';
   }, [theme]);
+  const fetchDirectoryUsers = useCallback(async (signal?: AbortSignal) => {
+    const recent = await nostr.query([{ kinds: [30000], '#d': ['velvet-adult-creators'], limit: 2000 }], { signal });
+    const directoryOwners = new Set(recent
+      .filter((event) => event.kind === 30000 && event.tags.some(([name, value]) => name === 'd' && value === 'velvet-adult-creators'))
+      .map((event) => event.pubkey));
+    const latestByOwner = new Map<string, NostrEvent>();
+    const owners = Array.from(directoryOwners);
+    for (let start = 0; start < owners.length; start += 100) {
+      const chunk = owners.slice(start, start + 100);
+      const currentLists = await nostr.query([{ kinds: [30000], authors: chunk, '#d': ['velvet-adult-creators'], limit: chunk.length }], { signal });
+      for (const event of currentLists) {
+        if (event.kind !== 30000 || !event.tags.some(([name, value]) => name === 'd' && value === 'velvet-adult-creators')) continue;
+        const current = latestByOwner.get(event.pubkey);
+        if (!current || event.created_at > current.created_at) latestByOwner.set(event.pubkey, event);
+      }
+    }
+    return Array.from(latestByOwner.values()).filter((event) => event.tags.some(([name, value]) => name === 'p' && value === event.pubkey)).map((event) => event.pubkey);
+  }, [nostr]);
+  const directoryUsersQuery = useQuery({
+    queryKey: ['velvet-adult-creator-directory-users'],
+    queryFn: async ({ signal }) => fetchDirectoryUsers(signal),
+    enabled: entered && directoryOpen,
+    staleTime: 60_000,
+    retry: 1,
+  });
+  const directoryEntries = directoryUsersQuery.data ?? [];
+
+  const isListedAsCreator = Boolean(user && directoryEntries.includes(user.pubkey));
+  const directoryMembers = directoryEntries.filter((pubkey) => pubkey !== user?.pubkey).slice(0, 48);
   const feedTagGroups = [
     ...(activeTopic === 'For you' || activeTopic === 'Creator notes' ? [['adultcreator', 'nsfwcreator', 'adultcontentcreator']] : []),
     ...(activeTopic === 'For you' || activeTopic === 'Industry talk' ? [['adultindustry', 'adultentertainment', 'sexwork', 'sexworker']] : []),
@@ -161,6 +208,27 @@ const Index = () => {
     }
   };
 
+  const setCreatorDirectoryStatus = async (shouldList: boolean) => {
+    if (!user) return;
+    setDirectoryMessage('');
+    const tags: string[][] = [
+      ['d', 'velvet-adult-creators'],
+      ['title', 'Velvet adult creator directory opt-in'],
+      ['description', 'Self-identification as an adult creator; public and not independently verified.'],
+      ...(shouldList ? [['p', user.pubkey]] : []),
+      ['alt', 'Public self-identification as an adult creator for the Velvet directory; not independently verified.'],
+    ];
+
+    try {
+      await publishDirectoryList({ kind: 30000, content: '', tags });
+      const refreshedDirectory = await fetchDirectoryUsers();
+      queryClient.setQueryData(['velvet-adult-creator-directory-users'], refreshedDirectory);
+      setDirectoryMessage(shouldList ? 'You opted in. Your profile will appear in the public directory.' : 'You opted out. Your profile was removed from the public directory.');
+    } catch {
+      setDirectoryMessage('Could not update the directory. Check your relay connection and try again.');
+    }
+  };
+
   const shareProfile = async () => {
     if (!user) return;
     try {
@@ -208,7 +276,7 @@ const Index = () => {
           <nav className="main-nav" aria-label="Main navigation">
             <a href="#feed" className="nav-link nav-active" onClick={() => setMobileNav(false)}><Compass size={18} /> Home <span className="nav-indicator" /></a>
             <a href="#discover" className="nav-link" onClick={() => { setActiveTopic('Creator notes'); setMobileNav(false); }}><Sparkles size={18} /> Discover</a>
-            <a href="#community" className="nav-link" onClick={() => setMobileNav(false)}><Users size={18} /> Community</a>
+            <button className="nav-link nav-button" onClick={() => { setDirectoryOpen(true); setMobileNav(false); }}><Users size={18} /> Creators <ArrowRight className="nav-trailing" size={14} /></button>
           </nav>
           <div className="sidebar-divider" />
           <div className="sidebar-label">YOUR SPACE <button className="icon-button tiny" aria-label="Add a list"><span>+</span></button></div>
@@ -220,7 +288,7 @@ const Index = () => {
 
         <main className="main-column" id="feed">
           <section className="welcome-banner" id="discover">
-            <div className="banner-copy"><div className="banner-kicker"><span className="live-dot" /> A NEW KIND OF CREATOR SPACE</div><h1>Your work.<br /><em>Your people.</em></h1><p>A creator-first community where adult industry voices can connect, share, and grow on their own terms.</p><a href="#community" className="banner-link">Find your people <ArrowRight size={16} /></a></div>
+            <div className="banner-copy"><div className="banner-kicker"><span className="live-dot" /> A NEW KIND OF CREATOR SPACE</div><h1>Your work.<br /><em>Your people.</em></h1><p>A creator-first community where adult industry voices can connect, share, and grow on their own terms.</p><button className="banner-link" onClick={() => setDirectoryOpen(true)}>Meet opt-in creators <ArrowRight size={16} /></button></div>
             <div className="banner-art" aria-hidden="true"><div className="art-orbit orbit-one" /><div className="art-orbit orbit-two" /><div className="art-glow" /><div className="art-letter">v</div><div className="art-caption">INDEPENDENT<br />BY NATURE</div><div className="art-stamp">18+ <span>✳</span></div></div>
             <div className="banner-bottom"><span><LockKeyhole size={13} /> YOU CONTROL YOUR IDENTITY</span><span>OPEN PROTOCOL <span className="purple-dot">●</span></span></div>
           </section>
@@ -238,12 +306,26 @@ const Index = () => {
         </main>
 
         <aside className="right-sidebar">
-          <section className="side-card community-card" id="community"><div className="side-card-title"><div><span className="eyebrow">A BETTER KIND OF SOCIAL</span><h3>Built for creators.</h3></div><ArrowDownRight size={19} /></div><p>Velvet brings independent adult creators together on an open, people-powered network.</p><div className="community-stat"><div className="stat-avatars"><span>A</span><span>J</span><span>M</span><span>+</span></div><span>Creators are finding their people</span></div><a href="#discover" className="side-link">Explore the community <ArrowRight size={14} /></a></section>
+          <section className="side-card community-card" id="community"><div className="side-card-title"><div><span className="eyebrow">A BETTER KIND OF SOCIAL</span><h3>Built for creators.</h3></div><ArrowDownRight size={19} /></div><p>Velvet brings independent adult creators together on an open, people-powered network.</p><div className="community-stat"><div className="stat-avatars"><span>A</span><span>J</span><span>M</span><span>+</span></div><span>Creators are finding their people</span></div><button className="side-link side-link-button" onClick={() => setDirectoryOpen(true)}>Meet opt-in creators <ArrowRight size={14} /></button></section>
           <section className="side-card guide-card" id="safety"><div className="guide-heading"><div className="guide-symbol"><ShieldCheck size={17} /></div><span className="eyebrow">YOUR SAFETY MATTERS</span></div><h3>Good boundaries.<br />Better community.</h3><p>Learn about consent, privacy, and how to report content that crosses a line.</p><a href="#community" className="side-link">Read our guidelines <ArrowRight size={14} /></a></section>
           <section className="side-card trend-card"><div className="trends-head"><span className="eyebrow">CONVERSATIONS TO JOIN</span><button className="icon-button tiny" aria-label="More topics"><MoreHorizontal size={16} /></button></div><a href="#feed" className="trend-item"><span>CREATOR LIFE · TRENDING</span><strong>Building on your own terms</strong><small>Join a growing conversation</small></a><a href="#feed" className="trend-item"><span>INDUSTRY TALK · NEW</span><strong>Privacy that puts you first</strong><small>Explore the discussion</small></a><a href="#feed" className="side-link">See what’s happening <ArrowRight size={14} /></a></section>
           <footer className="right-footer"><a href="#community">About</a><a href="#safety">Privacy</a><a href="#safety">Guidelines</a><span>Independent by nature. <span className="purple-dot">●</span></span></footer>
         </aside>
       </div>
+      <Dialog open={directoryOpen} onOpenChange={setDirectoryOpen}>
+        <DialogContent className="creator-dialog directory-dialog" aria-describedby="directory-description">
+          <DialogTitle className="visually-hidden">Adult creator directory</DialogTitle>
+          <DialogDescription className="visually-hidden">Opt-in profiles of people who self-identify as adult creators.</DialogDescription>
+          <section className="creator-panel directory-panel">
+            <div className="creator-panel-header"><div><span className="eyebrow">VELVET DIRECTORY</span><h2>Creators, by choice.</h2><p id="directory-description">Profiles shown here opted into a public Nostr people-list. Self-identified, not independently verified.</p></div></div>
+            {user ? <div className="directory-optin-card"><div><strong>{isListedAsCreator ? 'You’re listed in the directory' : 'Add yourself to the directory?'}</strong><p>{isListedAsCreator ? 'Your public profile is visible to anyone querying this list.' : 'Opt in only if you are an adult creator and want your public Nostr profile included.'}</p></div><button className={isListedAsCreator ? 'secondary-button' : 'primary-button'} disabled={isUpdatingDirectory || directoryUsersQuery.isPending} onClick={() => void setCreatorDirectoryStatus(!isListedAsCreator)}>{isUpdatingDirectory ? 'Updating…' : isListedAsCreator ? 'Remove me' : 'Opt in to directory'}</button></div> : <div className="directory-login-card"><span>Want to opt in? Connect your Nostr account to add or remove your profile.</span><LoginArea /></div>}
+            {directoryMessage && <p className={directoryMessage.startsWith('Could not') ? 'error-message' : 'success-message'} role="status">{directoryMessage}</p>}
+            <div className="directory-list-heading"><div><span className="eyebrow">PUBLIC OPT-IN LIST</span><h3>{directoryUsersQuery.isError ? 'Directory unavailable' : `${directoryEntries.length} ${directoryEntries.length === 1 ? 'creator' : 'creators'}`}</h3></div><span className="self-identified-badge">Self-identified</span></div>
+            {directoryUsersQuery.isPending ? <div className="feed-loading"><div className="skeleton-avatar" /><div className="skeleton-lines"><i /><i /><i /></div></div> : directoryUsersQuery.isError ? <div className="directory-empty"><Users size={21} /><strong>Couldn’t load creators right now</strong><span>Try again or check your relay connection.</span><button className="secondary-button" onClick={() => void directoryUsersQuery.refetch()}>Retry</button></div> : directoryMembers.length > 0 ? <div className="directory-list">{directoryMembers.map((pubkey) => <CreatorDirectoryCard key={pubkey} pubkey={pubkey} />)}</div> : <div className="directory-empty"><Users size={21} /><strong>No opt-in profiles yet</strong><span>Creators can choose to appear here through their own Nostr account.</span></div>}
+            <p className="directory-privacy"><ShieldCheck size={16} /> This list is public and portable across Nostr. It is not an age check or verification. You can opt out at any time from this panel.</p>
+          </section>
+        </DialogContent>
+      </Dialog>
       <Dialog open={creatorOpen} onOpenChange={setCreatorOpen}>
         <DialogContent className="creator-dialog" showCloseButton={false} aria-describedby="creator-tools-description">
           <DialogTitle className="visually-hidden">Creator tools</DialogTitle>
