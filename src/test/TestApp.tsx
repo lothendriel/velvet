@@ -21,7 +21,7 @@ export function TestApp({ children }: TestAppProps) {
   });
 
   const defaultConfig: AppConfig = {
-    theme: 'light',
+    theme: 'dark',
     relayMetadata: {
       relays: [
         { url: 'wss://relay.primal.net', read: true, write: true },

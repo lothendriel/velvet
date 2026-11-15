@@ -30,6 +30,8 @@ export interface AppConfig {
    * are used.
    */
   useAppBlossomServers: boolean;
+  /** Local-only profile layout override for site-owner testing. */
+  velvetProfileViewMode?: 'automatic' | 'regular' | 'creator';
 }
 
 export interface AppContextType {

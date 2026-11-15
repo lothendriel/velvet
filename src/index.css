@@ -562,3 +562,10 @@
   .profile-action-error { margin:12px 14px 0; }
 }
 .favorites-overflow { margin:12px 2px 0; color:var(--muted-foreground); font-size:10px; }
+.profile-view-testing { align-items:flex-start; }
+.profile-view-toggle { display:flex; flex-wrap:wrap; gap:7px; flex:0 0 auto; }
+.profile-view-toggle .selected { border-color:var(--primary); background:var(--accent); color:var(--primary); }
+@media (max-width:640px) {
+  .profile-view-toggle { width:100%; }
+  .profile-view-toggle .secondary-button { flex:1 1 auto; }
+}

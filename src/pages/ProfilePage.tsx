@@ -8,6 +8,7 @@ import { nip19 } from 'nostr-tools';
 import { Link } from 'react-router-dom';
 import { useAuthor } from '@/hooks/useAuthor';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { useAppContext } from '@/hooks/useAppContext';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useTheme } from '@/hooks/useTheme';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -79,10 +80,13 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
   const { nostr } = useNostr();
   const authorQuery = useAuthor(pubkey);
   const { user } = useCurrentUser();
+  const { config, updateConfig } = useAppContext();
   const { theme } = useTheme();
   const queryClient = useQueryClient();
   const { mutateAsync: publishEvent, isPending: isPublishing } = useNostrPublish();
   const isOwnProfile = user?.pubkey === pubkey;
+  const isSiteOwner = user?.pubkey === '0155373ac79b7ffb0f586c3e68396f9e82d46f7afe7016d46ed9ca46ba3e1bed';
+  const profileViewMode = isSiteOwner && isOwnProfile ? config.velvetProfileViewMode : 'automatic';
   const viewerPubkey = user?.pubkey;
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -92,7 +96,9 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
   const [actionError, setActionError] = useState('');
 
   const roleQuery = useCreatorRole(pubkey);
-  const isCreator = listIsSelfDeclared(roleQuery.data, CREATOR_LIST, pubkey);
+  const isCreator = profileViewMode === 'automatic'
+    ? listIsSelfDeclared(roleQuery.data, CREATOR_LIST, pubkey)
+    : profileViewMode === 'creator';
 
   const viewerFavoritesQuery = useQuery({
     queryKey: ['velvet-favorite-creators', 'viewer', viewerPubkey ?? ''],
@@ -177,7 +183,7 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
     }
   };
 
-  if (authorQuery.isPending || roleQuery.isPending) return <ProfileLoading />;
+  if (authorQuery.isPending || (profileViewMode === 'automatic' && roleQuery.isPending)) return <ProfileLoading />;
 
   const setCreatorStatus = async (shouldOptIn: boolean) => {
     if (!user || !isOwnProfile || isPublishing) return;
@@ -213,8 +219,9 @@ export function ProfilePage({ pubkey }: ProfilePageProps) {
         <div className="profile-heading"><div><h1>{displayName}</h1><span className="profile-npub">{nip19.npubEncode(pubkey).slice(0, 18)}…{nip19.npubEncode(pubkey).slice(-6)}</span></div>{metadata?.nip05 && <span className="profile-nip05"><BadgeCheck size={14} /> {metadata.nip05}</span>}</div>
         {metadata?.about && <p className="profile-about">{metadata.about}</p>}
         <div className="profile-links">{metadata?.website?.startsWith('https://') && <a href={metadata.website} target="_blank" rel="noreferrer">{metadata.website.replace(/^https:\/\//, '')} <ArrowRight size={13} /></a>}<span><ShieldCheck size={13} /> Nostr identity</span></div>
-        {user && isOwnProfile && !isCreator && <div className="creator-optin-callout"><div><span className="eyebrow">CREATOR PROFILE</span><strong>Work in the adult industry?</strong><p>Opt in to a creator profile to unlock the creator layout and appear in Velvet discovery. This is a public, self-identified label—not verification.</p></div><button className="primary-button" disabled={isPublishing} onClick={() => void setCreatorStatus(true)}>{isPublishing ? 'Updating…' : 'Opt in as creator'} <ArrowRight size={15} /></button></div>}
-        {user && isOwnProfile && isCreator && <div className="creator-optin-callout creator-opted-in"><div><span className="eyebrow">CREATOR PROFILE · PUBLIC</span><strong>Your profile is set to creator mode.</strong><p>Your creator label is self-identified and public on Nostr. You can switch back to a regular profile here.</p></div><button className="secondary-button" disabled={isPublishing} onClick={() => void setCreatorStatus(false)}>{isPublishing ? 'Updating…' : 'Opt out'}</button></div>}
+        {user && isOwnProfile && isSiteOwner && <div className="creator-optin-callout profile-view-testing"><div><span className="eyebrow">SITE OWNER TESTING</span><strong>Profile preview mode</strong><p>Switch the layout locally without publishing a role change. This only changes how your profile appears on this device.</p></div><div className="profile-view-toggle" role="group" aria-label="Profile preview mode"><button className={profileViewMode === 'automatic' ? 'secondary-button selected' : 'secondary-button'} aria-pressed={profileViewMode === 'automatic'} onClick={() => updateConfig((current) => ({ ...current, velvetProfileViewMode: 'automatic' }))}>Automatic</button><button className={profileViewMode === 'regular' ? 'secondary-button selected' : 'secondary-button'} aria-pressed={profileViewMode === 'regular'} onClick={() => updateConfig((current) => ({ ...current, velvetProfileViewMode: 'regular' }))}>Regular view</button><button className={profileViewMode === 'creator' ? 'secondary-button selected' : 'secondary-button'} aria-pressed={profileViewMode === 'creator'} onClick={() => updateConfig((current) => ({ ...current, velvetProfileViewMode: 'creator' }))}>Creator view</button></div></div>}
+        {user && isOwnProfile && profileViewMode === 'automatic' && !isCreator && <div className="creator-optin-callout"><div><span className="eyebrow">CREATOR PROFILE</span><strong>Work in the adult industry?</strong><p>Opt in to a creator profile to unlock the creator layout and appear in Velvet discovery. This is a public, self-identified label—not verification.</p></div><button className="primary-button" disabled={isPublishing} onClick={() => void setCreatorStatus(true)}>{isPublishing ? 'Updating…' : 'Opt in as creator'} <ArrowRight size={15} /></button></div>}
+        {user && isOwnProfile && profileViewMode === 'automatic' && isCreator && <div className="creator-optin-callout creator-opted-in"><div><span className="eyebrow">CREATOR PROFILE · PUBLIC</span><strong>Your profile is set to creator mode.</strong><p>Your creator label is self-identified and public on Nostr. You can switch back to a regular profile here.</p></div><button className="secondary-button" disabled={isPublishing} onClick={() => void setCreatorStatus(false)}>{isPublishing ? 'Updating…' : 'Opt out'}</button></div>}
         {actionError && <p className="error-message profile-action-error" role="alert">{actionError}</p>}
       </section>
 

@@ -33,6 +33,7 @@ const AppConfigSchema = z.object({
   relayMetadata: RelayMetadataSchema,
   blossomServerMetadata: BlossomServerMetadataSchema,
   useAppBlossomServers: z.boolean(),
+  velvetProfileViewMode: z.enum(['automatic', 'regular', 'creator']).optional(),
 }) satisfies z.ZodType<AppConfig>;
 
 export function AppProvider(props: AppProviderProps) {

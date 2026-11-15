@@ -186,7 +186,7 @@ const Index = () => {
           <Link className="nav-link" to={user ? `/${nip19.npubEncode(user.pubkey)}` : '/creators'} onClick={() => setMobileNav(false)}><Wallet size={18} /> {user ? 'My profile' : 'Creator directory'} <ArrowRight className="nav-trailing" size={14} /></Link>
           <a href="#safety" className="nav-link" onClick={() => setMobileNav(false)}><ShieldCheck size={18} /> Safety & privacy</a>
           <div className="sidebar-promo" id="creator-tools"><div className="promo-icon"><LockKeyhole size={17} /></div><h3>Your work. Your keys.</h3><p>Public by default—share thoughtfully and keep control of your identity.</p><Link className="promo-action" to={user ? `/${nip19.npubEncode(user.pubkey)}` : '/creators'}>OPEN CREATOR PROFILE <ArrowRight size={13} /></Link></div>
-          <div className="sidebar-bottom">{user ? <Link className="nav-link sidebar-profile-link" to={`/${nip19.npubEncode(user.pubkey)}`} onClick={() => setMobileNav(false)}><Users size={15} /> My profile</Link> : <span className="sidebar-signin-hint">Sign in to create a profile</span>}<a href="#safety"><CircleHelp size={16} /> Community guidelines</a><a href="https://shakespeare.diy" target="_blank" rel="noreferrer">Vibed with Shakespeare</a><span>© 2026 Velvet · Built on Nostr</span></div>
+          <div className="sidebar-bottom">{!user && <span className="sidebar-signin-hint">Sign in to create a profile</span>}<a href="#safety"><CircleHelp size={16} /> Community guidelines</a><a href="https://shakespeare.diy" target="_blank" rel="noreferrer">Vibed with Shakespeare</a><span>© 2026 Velvet · Built on Nostr</span></div>
         </aside>
 
         <main className="main-column" id="feed">
