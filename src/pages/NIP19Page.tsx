@@ -1,6 +1,7 @@
 import { nip19 } from 'nostr-tools';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import NotFound from './NotFound';
+import { ProfilePage } from './ProfilePage';
 
 export function NIP19Page() {
   const { nip19: identifier } = useParams<{ nip19: string }>();
@@ -20,21 +21,19 @@ export function NIP19Page() {
 
   switch (type) {
     case 'npub':
+      return <ProfilePage pubkey={decoded.data} />;
+
     case 'nprofile':
-      // AI agent should implement profile view here
-      return <div>Profile placeholder</div>;
+      return <ProfilePage pubkey={decoded.data.pubkey} />;
 
     case 'note':
-      // AI agent should implement note view here
-      return <div>Note placeholder</div>;
+      return <div className="profile-page velvet-app"><main className="profile-content"><div className="profile-empty"><h1>Note view coming next</h1><p>This identifier is valid, but the note viewer hasn’t been built yet.</p><Link className="secondary-button" to="/">Return to Velvet</Link></div></main></div>;
 
     case 'nevent':
-      // AI agent should implement event view here
-      return <div>Event placeholder</div>;
+      return <div className="profile-page velvet-app"><main className="profile-content"><div className="profile-empty"><h1>Event view coming next</h1><p>This identifier is valid, but the event viewer hasn’t been built yet.</p><Link className="secondary-button" to="/">Return to Velvet</Link></div></main></div>;
 
     case 'naddr':
-      // AI agent should implement addressable event view here
-      return <div>Addressable event placeholder</div>;
+      return <div className="profile-page velvet-app"><main className="profile-content"><div className="profile-empty"><h1>Addressable event view coming next</h1><p>This identifier is valid, but the event viewer hasn’t been built yet.</p><Link className="secondary-button" to="/">Return to Velvet</Link></div></main></div>;
 
     default:
       return <NotFound />;

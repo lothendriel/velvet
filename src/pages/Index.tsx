@@ -1,22 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSeoMeta } from '@unhead/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNostr } from '@nostrify/react';
-import type { NostrEvent, NostrMetadata } from '@nostrify/nostrify';
+import type { NostrEvent } from '@nostrify/nostrify';
 import {
-  ArrowDownRight, ArrowRight, Bell, Check, ChevronDown, CircleHelp,
-  Compass, Copy, Heart, ImagePlus, Link2, LockKeyhole, Menu, MessageCircle, Moon, MoreHorizontal, Radio,
+  ArrowDownRight, ArrowRight, Bell, ChevronDown, CircleHelp,
+  Compass, Heart, ImagePlus, LockKeyhole, Menu, MessageCircle, Moon, MoreHorizontal, Radio,
   Search, ShieldCheck, Sparkles, Sun, Upload, Users, Wallet, X,
 } from 'lucide-react';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { useAuthor } from '@/hooks/useAuthor';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useUploadFile } from '@/hooks/useUploadFile';
 import { useTheme } from '@/hooks/useTheme';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { nip19 } from 'nostr-tools';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Link } from 'react-router-dom';
 
 const topics = ['For you', 'Creator notes', 'Industry talk', 'Work & wellness'];
 const timeAgo = (timestamp: number) => {
@@ -49,19 +47,6 @@ function AgeGate({ onEnter }: { onEnter: () => void }) {
         <div className="age-footer"><span>Independent by nature.</span><span>Powered by Nostr <span className="purple-dot">●</span></span></div>
       </div>
     </main>
-  );
-}
-
-function CreatorDirectoryCard({ pubkey }: { pubkey: string }) {
-  const { data } = useAuthor(pubkey);
-  const displayName = data?.metadata?.display_name || data?.metadata?.name || `${pubkey.slice(0, 6)}…${pubkey.slice(-4)}`;
-  const picture = data?.metadata?.picture?.startsWith('https://') ? data.metadata.picture : undefined;
-  return (
-    <a className="directory-profile" href={`/${nip19.npubEncode(pubkey)}`}>
-      <Avatar className="directory-avatar"><AvatarImage src={picture} alt="" referrerPolicy="no-referrer" /><AvatarFallback>{displayName.slice(0, 1).toUpperCase()}</AvatarFallback></Avatar>
-      <span className="directory-profile-copy"><strong>{displayName}</strong><small>{data?.metadata?.about || `npub:${pubkey.slice(0, 8)}…`}</small></span>
-      <span className="self-identified-badge">Self-identified</span>
-    </a>
   );
 }
 
@@ -100,58 +85,28 @@ const Index = () => {
   const queryClient = useQueryClient();
   const { mutateAsync: publish, isPending, error } = useNostrPublish();
   const { mutateAsync: reactToEvent } = useNostrPublish();
-  const { mutateAsync: publishDirectoryList, isPending: isUpdatingDirectory } = useNostrPublish();
   const { mutateAsync: uploadFile, isPending: isUploading } = useUploadFile();
   const [attachments, setAttachments] = useState<Array<{ url: string; tags: string[][] }>>([]);
-  const [creatorOpen, setCreatorOpen] = useState(false);
-  const [directoryOpen, setDirectoryOpen] = useState(false);
-  const [directoryMessage, setDirectoryMessage] = useState('');
-  const [profileDraft, setProfileDraft] = useState({ name: '', about: '', website: '', picture: '' });
-  const [profileSaving, setProfileSaving] = useState(false);
-  const [profileMessage, setProfileMessage] = useState('');
-  const [copied, setCopied] = useState(false);
   const [uploadMessage, setUploadMessage] = useState('');
-  const profileFileInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { theme, setTheme } = useTheme();
   const currentProfileName = metadata?.display_name || metadata?.name || '';
-  useEffect(() => {
-    setProfileDraft({ name: metadata?.name ?? '', about: metadata?.about ?? '', website: metadata?.website ?? '', picture: metadata?.picture ?? '' });
-  }, [metadata]);
+  const ownCreatorQuery = useQuery({
+    queryKey: ['velvet-profile-role', user?.pubkey ?? ''],
+    queryFn: async ({ signal }) => {
+      if (!user) return undefined;
+      const events = await nostr.query([{ kinds: [30000], authors: [user.pubkey], '#d': ['velvet-adult-creators'], limit: 10 }], { signal });
+      return events.filter((event) => event.kind === 30000 && event.pubkey === user.pubkey && event.tags.some(([name, value]) => name === 'd' && value === 'velvet-adult-creators')).sort((a, b) => b.created_at - a.created_at)[0];
+    },
+    enabled: entered && Boolean(user),
+    staleTime: 60_000,
+  });
+  const isCreatorUser = Boolean(user && ownCreatorQuery.data?.kind === 30000 && ownCreatorQuery.data.pubkey === user.pubkey && ownCreatorQuery.data.tags.some(([name, value]) => name === 'd' && value === 'velvet-adult-creators') && ownCreatorQuery.data.tags.some(([name, value]) => name === 'p' && value === user.pubkey));
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     document.documentElement.classList.toggle('light', theme !== 'dark');
     document.documentElement.style.colorScheme = theme === 'dark' ? 'dark' : 'light';
   }, [theme]);
-  const fetchDirectoryUsers = useCallback(async (signal?: AbortSignal) => {
-    const recent = await nostr.query([{ kinds: [30000], '#d': ['velvet-adult-creators'], limit: 2000 }], { signal });
-    const directoryOwners = new Set(recent
-      .filter((event) => event.kind === 30000 && event.tags.some(([name, value]) => name === 'd' && value === 'velvet-adult-creators'))
-      .map((event) => event.pubkey));
-    const latestByOwner = new Map<string, NostrEvent>();
-    const owners = Array.from(directoryOwners);
-    for (let start = 0; start < owners.length; start += 100) {
-      const chunk = owners.slice(start, start + 100);
-      const currentLists = await nostr.query([{ kinds: [30000], authors: chunk, '#d': ['velvet-adult-creators'], limit: chunk.length }], { signal });
-      for (const event of currentLists) {
-        if (event.kind !== 30000 || !event.tags.some(([name, value]) => name === 'd' && value === 'velvet-adult-creators')) continue;
-        const current = latestByOwner.get(event.pubkey);
-        if (!current || event.created_at > current.created_at) latestByOwner.set(event.pubkey, event);
-      }
-    }
-    return Array.from(latestByOwner.values()).filter((event) => event.tags.some(([name, value]) => name === 'p' && value === event.pubkey)).map((event) => event.pubkey);
-  }, [nostr]);
-  const directoryUsersQuery = useQuery({
-    queryKey: ['velvet-adult-creator-directory-users'],
-    queryFn: async ({ signal }) => fetchDirectoryUsers(signal),
-    enabled: entered && directoryOpen,
-    staleTime: 60_000,
-    retry: 1,
-  });
-  const directoryEntries = directoryUsersQuery.data ?? [];
-
-  const isListedAsCreator = Boolean(user && directoryEntries.includes(user.pubkey));
-  const directoryMembers = directoryEntries.filter((pubkey) => pubkey !== user?.pubkey).slice(0, 48);
   const feedTagGroups = [
     ...(activeTopic === 'For you' || activeTopic === 'Creator notes' ? [['adultcreator', 'nsfwcreator', 'adultcontentcreator']] : []),
     ...(activeTopic === 'For you' || activeTopic === 'Industry talk' ? [['adultindustry', 'adultentertainment', 'sexwork', 'sexworker']] : []),
@@ -165,7 +120,7 @@ const Index = () => {
   });
   const posts = (feed.data ?? []).filter((event, index, events) => event.kind === 1 && events.findIndex((item) => item.id === event.id) === index && (!search || event.content.toLowerCase().includes(search.toLowerCase()))).sort((a, b) => b.created_at - a.created_at).slice(0, 15);
   const likePost = async (event: NostrEvent) => {
-    if (!user) return;
+    if (!user || !event.tags.some(([name, value]) => name === 't' && value === 'adultcreator')) return;
     try {
       await reactToEvent({ kind: 7, content: '+', tags: [['e', event.id], ['p', event.pubkey], ['k', String(event.kind)]] });
       await queryClient.invalidateQueries({ queryKey: ['velvet-creator-feed'] });
@@ -195,7 +150,7 @@ const Index = () => {
   };
 
   const submitPost = async () => {
-    if ((!draft.trim() && attachments.length === 0) || !user) return;
+    if ((!draft.trim() && attachments.length === 0) || !user || !isCreatorUser) return;
     try {
       const mediaText = attachments.map(({ url }) => url).join('\n');
       const imetaTags = attachments.map(({ tags }) => ['imeta', ...tags.map(([name, value]) => `${name} ${value}`)]);
@@ -208,58 +163,6 @@ const Index = () => {
     }
   };
 
-  const setCreatorDirectoryStatus = async (shouldList: boolean) => {
-    if (!user) return;
-    setDirectoryMessage('');
-    const tags: string[][] = [
-      ['d', 'velvet-adult-creators'],
-      ['title', 'Velvet adult creator directory opt-in'],
-      ['description', 'Self-identification as an adult creator; public and not independently verified.'],
-      ...(shouldList ? [['p', user.pubkey]] : []),
-      ['alt', 'Public self-identification as an adult creator for the Velvet directory; not independently verified.'],
-    ];
-
-    try {
-      await publishDirectoryList({ kind: 30000, content: '', tags });
-      const refreshedDirectory = await fetchDirectoryUsers();
-      queryClient.setQueryData(['velvet-adult-creator-directory-users'], refreshedDirectory);
-      setDirectoryMessage(shouldList ? 'You opted in. Your profile will appear in the public directory.' : 'You opted out. Your profile was removed from the public directory.');
-    } catch {
-      setDirectoryMessage('Could not update the directory. Check your relay connection and try again.');
-    }
-  };
-
-  const shareProfile = async () => {
-    if (!user) return;
-    try {
-      await navigator.clipboard.writeText(`${window.location.origin}/${nip19.npubEncode(user.pubkey)}`);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      setProfileMessage('Could not copy automatically. Copy your profile link from the address bar.');
-    }
-  };
-
-  const saveProfile = async () => {
-    if (!user) return;
-    setProfileSaving(true);
-    setProfileMessage('');
-    try {
-      const next: NostrMetadata = { ...(metadata ?? {}), ...profileDraft };
-      for (const key of Object.keys(next) as Array<keyof NostrMetadata>) {
-        if (next[key] === '') delete next[key];
-      }
-      await publish({ kind: 0, content: JSON.stringify(next) });
-      await queryClient.invalidateQueries({ queryKey: ['nostr', 'author', user.pubkey] });
-      await queryClient.invalidateQueries({ queryKey: ['logins'] });
-      setCreatorOpen(false);
-    } catch {
-      setProfileMessage('Profile update didn’t publish. Check your relay connection and try again.');
-    } finally {
-      setProfileSaving(false);
-    }
-  };
-
   if (!entered) return <AgeGate onEnter={enter} />;
 
   return (
@@ -268,7 +171,7 @@ const Index = () => {
         <button className="icon-button mobile-menu" aria-label="Open menu" onClick={() => setMobileNav(!mobileNav)}>{mobileNav ? <X size={20} /> : <Menu size={20} />}</button>
         <a href="/" className="brand-lockup"><span className="brand-mark">v.</span><span>velvet<span className="brand-dot">.</span></span></a>
         <div className="top-search"><Search size={17} /><input aria-label="Search Velvet" placeholder="Search creators, conversations…" value={search} onChange={(event) => setSearch(event.target.value)} /><kbd>⌘ K</kbd></div>
-        <div className="top-actions"><VelvetThemeToggle theme={theme} setTheme={setTheme} /><button className="icon-button" aria-label="Notifications"><Bell size={19} /><i /></button><LoginArea className="login-area" /></div>
+        <div className="top-actions"><VelvetThemeToggle theme={theme} setTheme={setTheme} /><button className="icon-button" aria-label="Notifications"><Bell size={19} /><i /></button>{user && <Link className="profile-chip" to={`/${nip19.npubEncode(user.pubkey)}`}><span>{currentProfileName || 'My profile'}</span><ArrowRight size={14} /></Link>}<LoginArea className="login-area" /></div>
       </header>
 
       <div className="app-layout">
@@ -276,19 +179,19 @@ const Index = () => {
           <nav className="main-nav" aria-label="Main navigation">
             <a href="#feed" className="nav-link nav-active" onClick={() => setMobileNav(false)}><Compass size={18} /> Home <span className="nav-indicator" /></a>
             <a href="#discover" className="nav-link" onClick={() => { setActiveTopic('Creator notes'); setMobileNav(false); }}><Sparkles size={18} /> Discover</a>
-            <button className="nav-link nav-button" onClick={() => { setDirectoryOpen(true); setMobileNav(false); }}><Users size={18} /> Creators <ArrowRight className="nav-trailing" size={14} /></button>
+            <Link className="nav-link" to="/creators" onClick={() => setMobileNav(false)}><Users size={18} /> Creators <ArrowRight className="nav-trailing" size={14} /></Link>
           </nav>
           <div className="sidebar-divider" />
           <div className="sidebar-label">YOUR SPACE <button className="icon-button tiny" aria-label="Add a list"><span>+</span></button></div>
-          <button className="nav-link nav-button" onClick={() => { setCreatorOpen(true); setMobileNav(false); }}><Wallet size={18} /> Creator tools <ArrowRight className="nav-trailing" size={14} /></button>
+          <Link className="nav-link" to={user ? `/${nip19.npubEncode(user.pubkey)}` : '/creators'} onClick={() => setMobileNav(false)}><Wallet size={18} /> {user ? 'My profile' : 'Creator directory'} <ArrowRight className="nav-trailing" size={14} /></Link>
           <a href="#safety" className="nav-link" onClick={() => setMobileNav(false)}><ShieldCheck size={18} /> Safety & privacy</a>
-          <div className="sidebar-promo" id="creator-tools"><div className="promo-icon"><LockKeyhole size={17} /></div><h3>Your work. Your keys.</h3><p>Public by default—share thoughtfully and keep control of your identity.</p><button className="promo-action" onClick={() => setCreatorOpen(true)}>OPEN CREATOR TOOLS <ArrowRight size={13} /></button></div>
-          <div className="sidebar-bottom"><a href="#safety"><CircleHelp size={16} /> Community guidelines</a><a href="https://shakespeare.diy" target="_blank" rel="noreferrer">Vibed with Shakespeare</a><span>© 2026 Velvet · Built on Nostr</span></div>
+          <div className="sidebar-promo" id="creator-tools"><div className="promo-icon"><LockKeyhole size={17} /></div><h3>Your work. Your keys.</h3><p>Public by default—share thoughtfully and keep control of your identity.</p><Link className="promo-action" to={user ? `/${nip19.npubEncode(user.pubkey)}` : '/creators'}>OPEN CREATOR PROFILE <ArrowRight size={13} /></Link></div>
+          <div className="sidebar-bottom">{user ? <Link className="nav-link sidebar-profile-link" to={`/${nip19.npubEncode(user.pubkey)}`} onClick={() => setMobileNav(false)}><Users size={15} /> My profile</Link> : <span className="sidebar-signin-hint">Sign in to create a profile</span>}<a href="#safety"><CircleHelp size={16} /> Community guidelines</a><a href="https://shakespeare.diy" target="_blank" rel="noreferrer">Vibed with Shakespeare</a><span>© 2026 Velvet · Built on Nostr</span></div>
         </aside>
 
         <main className="main-column" id="feed">
           <section className="welcome-banner" id="discover">
-            <div className="banner-copy"><div className="banner-kicker"><span className="live-dot" /> A NEW KIND OF CREATOR SPACE</div><h1>Your work.<br /><em>Your people.</em></h1><p>A creator-first community where adult industry voices can connect, share, and grow on their own terms.</p><button className="banner-link" onClick={() => setDirectoryOpen(true)}>Meet opt-in creators <ArrowRight size={16} /></button></div>
+            <div className="banner-copy"><div className="banner-kicker"><span className="live-dot" /> A NEW KIND OF CREATOR SPACE</div><h1>Your work.<br /><em>Your people.</em></h1><p>A creator-first community where adult industry voices can connect, share, and grow on their own terms.</p><Link className="banner-link" to="/creators">Meet opt-in creators <ArrowRight size={16} /></Link></div>
             <div className="banner-art" aria-hidden="true"><div className="art-orbit orbit-one" /><div className="art-orbit orbit-two" /><div className="art-glow" /><div className="art-letter">v</div><div className="art-caption">INDEPENDENT<br />BY NATURE</div><div className="art-stamp">18+ <span>✳</span></div></div>
             <div className="banner-bottom"><span><LockKeyhole size={13} /> YOU CONTROL YOUR IDENTITY</span><span>OPEN PROTOCOL <span className="purple-dot">●</span></span></div>
           </section>
@@ -297,51 +200,22 @@ const Index = () => {
 
           <section className="compose-card" aria-label="Write a post" id="compose">
             <div className="compose-avatar">{user ? <span>{user.pubkey.slice(0, 1).toUpperCase()}</span> : <Sparkles size={19} />}</div>
-            <div className="compose-body"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={user ? 'What’s on your mind? Share with the community…' : 'Join the conversation. Connect your Nostr account to post.'} aria-label="Write a community post" maxLength={2000} /><input ref={fileInputRef} className="visually-hidden" type="file" accept="image/*,video/*" aria-label="Choose post media" onChange={(event) => { const file = event.target.files?.[0]; if (file) void addAttachment(file); }} />{attachments.length > 0 && <div className="attachment-list">{attachments.map(({ url }, index) => <div className="attachment-chip" key={url}><ImagePlus size={14} /><span>Media {index + 1} attached</span><button aria-label={`Remove media ${index + 1}`} onClick={() => setAttachments((current) => current.filter((item) => item.url !== url))}><X size={14} /></button></div>)}</div>}{uploadMessage && <p className="error-message">{uploadMessage}</p>}<div className="compose-footer"><span><LockKeyhole size={13} /> Public post · visible to connected relays</span><div className="compose-actions"><button className="icon-button attach-button" aria-label="Attach media" title={user ? 'Upload image or video' : 'Connect a Nostr account to upload media'} disabled={!user || isUploading} onClick={() => fileInputRef.current?.click()}>{isUploading ? <Upload className="spin" size={17} /> : <ImagePlus size={18} />}</button><button className="primary-button post-button" disabled={(!draft.trim() && attachments.length === 0) || !user || isPending || isUploading} onClick={() => void submitPost()}>{isPending ? 'Posting…' : 'Post'} <ArrowRight size={15} /></button></div></div>{error && <p className="error-message">Could not publish right now. Check your relay connection and try again.</p>}</div>
+            {isCreatorUser && <div className="compose-body"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={!user ? 'Join the conversation. Connect your Nostr account to reply.' : isCreatorUser ? 'What’s on your mind? Share with the community…' : 'Creator posting is opt-in. You can still reply to creator posts.'} aria-label="Write a community post" maxLength={2000} /><input ref={fileInputRef} className="visually-hidden" type="file" accept="image/*,video/*" aria-label="Choose post media" onChange={(event) => { const file = event.target.files?.[0]; if (file) void addAttachment(file); }} />{attachments.length > 0 && <div className="attachment-list">{attachments.map(({ url }, index) => <div className="attachment-chip" key={url}><ImagePlus size={14} /><span>Media {index + 1} attached</span><button aria-label={`Remove media ${index + 1}`} onClick={() => setAttachments((current) => current.filter((item) => item.url !== url))}><X size={14} /></button></div>)}</div>}{uploadMessage && <p className="error-message">{uploadMessage}</p>}<div className="compose-footer"><span><LockKeyhole size={13} /> Public post · visible to connected relays</span><div className="compose-actions"><button className="icon-button attach-button" aria-label="Attach media" title={user ? 'Upload image or video' : 'Connect a Nostr account to upload media'} disabled={!user || isUploading} onClick={() => fileInputRef.current?.click()}>{isUploading ? <Upload className="spin" size={17} /> : <ImagePlus size={18} />}</button><button className="primary-button post-button" disabled={(!draft.trim() && attachments.length === 0) || !user || !isCreatorUser || isPending || isUploading} onClick={() => void submitPost()}>{isPending ? 'Posting…' : 'Post'} <ArrowRight size={15} /></button></div></div>{error && <p className="error-message">Could not publish right now. Check your relay connection and try again.</p>}            </div>}
+            {!isCreatorUser && <div className="compose-body regular-user-prompt"><p>{user ? 'Regular profiles can favorite creators. Replies and reactions are still being built.' : 'Sign in to favorite creators and join conversations.'}</p><Link className="secondary-button" to={user ? `/${nip19.npubEncode(user.pubkey)}` : '/creators'}>{user ? 'Go to my profile' : 'Meet creators'} <ArrowRight size={14} /></Link></div>}
           </section>
 
           <div className="feed-heading"><div><span className="eyebrow">THE CONVERSATION</span><h2>{activeTopic === 'For you' ? 'Latest from the community' : activeTopic}</h2></div><button className="sort-button">Latest <ChevronDown size={15} /></button></div>
-          {feed.isPending ? <div className="feed-loading"><div className="skeleton-avatar" /><div className="skeleton-lines"><i /><i /><i /></div></div> : posts.length > 0 ? <div className="post-list">{posts.map((event) => <PostCard key={event.id} event={event} canLike={Boolean(user)} onLike={(target) => void likePost(target)} />)}</div> : <div className="empty-feed"><div className="empty-icon"><Radio size={21} /></div><span className="eyebrow">YOUR NETWORK, YOUR FEED</span><h3>It’s quiet in here. For now.</h3><p>Choose Creator notes or Industry talk to explore public conversations, or share a thought with the community to get started.</p><button className="text-button" onClick={() => document.querySelector<HTMLTextAreaElement>('.compose-body textarea')?.focus()}>Write the first note <ArrowRight size={15} /></button></div>}
+          {feed.isPending ? <div className="feed-loading"><div className="skeleton-avatar" /><div className="skeleton-lines"><i /><i /><i /></div></div> : posts.length > 0 ? <div className="post-list">{posts.map((event) => <PostCard key={event.id} event={event} canLike={Boolean(user)} onLike={(target) => void likePost(target)} />)}</div> : <div className="empty-feed"><div className="empty-icon"><Radio size={21} /></div><span className="eyebrow">YOUR NETWORK, YOUR FEED</span><h3>It’s quiet in here. For now.</h3><p>Choose Creator notes or Industry talk to explore public conversations, or share a thought with the community to get started.</p>{isCreatorUser ? <button className="text-button" onClick={() => document.querySelector<HTMLTextAreaElement>('.compose-body textarea')?.focus()}>Write a creator note <ArrowRight size={15} /></button> : <Link className="text-button" to="/creators">Meet Velvet creators <ArrowRight size={15} /></Link>}</div>}
           <div className="feed-end"><span /> YOU’RE ALL CAUGHT UP <span /></div>
         </main>
 
         <aside className="right-sidebar">
-          <section className="side-card community-card" id="community"><div className="side-card-title"><div><span className="eyebrow">A BETTER KIND OF SOCIAL</span><h3>Built for creators.</h3></div><ArrowDownRight size={19} /></div><p>Velvet brings independent adult creators together on an open, people-powered network.</p><div className="community-stat"><div className="stat-avatars"><span>A</span><span>J</span><span>M</span><span>+</span></div><span>Creators are finding their people</span></div><button className="side-link side-link-button" onClick={() => setDirectoryOpen(true)}>Meet opt-in creators <ArrowRight size={14} /></button></section>
+          <section className="side-card community-card" id="community"><div className="side-card-title"><div><span className="eyebrow">A BETTER KIND OF SOCIAL</span><h3>Built for creators.</h3></div><ArrowDownRight size={19} /></div><p>Velvet brings independent adult creators together on an open, people-powered network.</p><div className="community-stat"><div className="stat-avatars"><span>A</span><span>J</span><span>M</span><span>+</span></div><span>Creators are finding their people</span></div><Link className="side-link" to="/creators">Meet opt-in creators <ArrowRight size={14} /></Link></section>
           <section className="side-card guide-card" id="safety"><div className="guide-heading"><div className="guide-symbol"><ShieldCheck size={17} /></div><span className="eyebrow">YOUR SAFETY MATTERS</span></div><h3>Good boundaries.<br />Better community.</h3><p>Learn about consent, privacy, and how to report content that crosses a line.</p><a href="#community" className="side-link">Read our guidelines <ArrowRight size={14} /></a></section>
           <section className="side-card trend-card"><div className="trends-head"><span className="eyebrow">CONVERSATIONS TO JOIN</span><button className="icon-button tiny" aria-label="More topics"><MoreHorizontal size={16} /></button></div><a href="#feed" className="trend-item"><span>CREATOR LIFE · TRENDING</span><strong>Building on your own terms</strong><small>Join a growing conversation</small></a><a href="#feed" className="trend-item"><span>INDUSTRY TALK · NEW</span><strong>Privacy that puts you first</strong><small>Explore the discussion</small></a><a href="#feed" className="side-link">See what’s happening <ArrowRight size={14} /></a></section>
           <footer className="right-footer"><a href="#community">About</a><a href="#safety">Privacy</a><a href="#safety">Guidelines</a><span>Independent by nature. <span className="purple-dot">●</span></span></footer>
         </aside>
       </div>
-      <Dialog open={directoryOpen} onOpenChange={setDirectoryOpen}>
-        <DialogContent className="creator-dialog directory-dialog" aria-describedby="directory-description">
-          <DialogTitle className="visually-hidden">Adult creator directory</DialogTitle>
-          <DialogDescription className="visually-hidden">Opt-in profiles of people who self-identify as adult creators.</DialogDescription>
-          <section className="creator-panel directory-panel">
-            <div className="creator-panel-header"><div><span className="eyebrow">VELVET DIRECTORY</span><h2>Creators, by choice.</h2><p id="directory-description">Profiles shown here opted into a public Nostr people-list. Self-identified, not independently verified.</p></div></div>
-            {user ? <div className="directory-optin-card"><div><strong>{isListedAsCreator ? 'You’re listed in the directory' : 'Add yourself to the directory?'}</strong><p>{isListedAsCreator ? 'Your public profile is visible to anyone querying this list.' : 'Opt in only if you are an adult creator and want your public Nostr profile included.'}</p></div><button className={isListedAsCreator ? 'secondary-button' : 'primary-button'} disabled={isUpdatingDirectory || directoryUsersQuery.isPending} onClick={() => void setCreatorDirectoryStatus(!isListedAsCreator)}>{isUpdatingDirectory ? 'Updating…' : isListedAsCreator ? 'Remove me' : 'Opt in to directory'}</button></div> : <div className="directory-login-card"><span>Want to opt in? Connect your Nostr account to add or remove your profile.</span><LoginArea /></div>}
-            {directoryMessage && <p className={directoryMessage.startsWith('Could not') ? 'error-message' : 'success-message'} role="status">{directoryMessage}</p>}
-            <div className="directory-list-heading"><div><span className="eyebrow">PUBLIC OPT-IN LIST</span><h3>{directoryUsersQuery.isError ? 'Directory unavailable' : `${directoryEntries.length} ${directoryEntries.length === 1 ? 'creator' : 'creators'}`}</h3></div><span className="self-identified-badge">Self-identified</span></div>
-            {directoryUsersQuery.isPending ? <div className="feed-loading"><div className="skeleton-avatar" /><div className="skeleton-lines"><i /><i /><i /></div></div> : directoryUsersQuery.isError ? <div className="directory-empty"><Users size={21} /><strong>Couldn’t load creators right now</strong><span>Try again or check your relay connection.</span><button className="secondary-button" onClick={() => void directoryUsersQuery.refetch()}>Retry</button></div> : directoryMembers.length > 0 ? <div className="directory-list">{directoryMembers.map((pubkey) => <CreatorDirectoryCard key={pubkey} pubkey={pubkey} />)}</div> : <div className="directory-empty"><Users size={21} /><strong>No opt-in profiles yet</strong><span>Creators can choose to appear here through their own Nostr account.</span></div>}
-            <p className="directory-privacy"><ShieldCheck size={16} /> This list is public and portable across Nostr. It is not an age check or verification. You can opt out at any time from this panel.</p>
-          </section>
-        </DialogContent>
-      </Dialog>
-      <Dialog open={creatorOpen} onOpenChange={setCreatorOpen}>
-        <DialogContent className="creator-dialog" showCloseButton={false} aria-describedby="creator-tools-description">
-          <DialogTitle className="visually-hidden">Creator tools</DialogTitle>
-          <DialogDescription className="visually-hidden">Profile management, media posting, public sharing, and safety tips.</DialogDescription>
-          <section className="creator-panel">
-            <div className="creator-panel-header"><div><span className="eyebrow">YOUR CREATOR SPACE</span><h2 id="creator-tools-title">Creator tools</h2><p id="creator-tools-description">Manage your profile, share your identity, and post safely.</p></div><button className="icon-button" onClick={() => setCreatorOpen(false)} aria-label="Close creator tools"><X size={19} /></button></div>
-            {user ? <>
-              <div className="creator-profile-preview"><div className="creator-profile-avatar">{metadata?.picture?.startsWith('https://') ? <img src={metadata.picture} alt="" /> : (currentProfileName || user.pubkey.slice(0, 1)).slice(0, 1).toUpperCase()}</div><div className="creator-profile-meta"><strong>{currentProfileName || 'Set up your creator profile'}</strong><span>nostr:{nip19.npubEncode(user.pubkey).slice(0, 19)}…</span></div><button className="icon-button" onClick={() => void shareProfile()} aria-label="Copy your profile link" title="Copy profile link">{copied ? <Check size={17} /> : <Copy size={17} />}</button></div>
-              {copied && <p className="success-message">Profile link copied. Share it anywhere.</p>}
-              <div className="creator-form"><label>Display name<input value={profileDraft.name} maxLength={50} onChange={(event) => setProfileDraft((current) => ({ ...current, name: event.target.value }))} placeholder="How people know you" /></label><label>About you<textarea value={profileDraft.about} maxLength={280} rows={3} onChange={(event) => setProfileDraft((current) => ({ ...current, about: event.target.value }))} placeholder="Your work, interests, and what you’re here for" /><small>{profileDraft.about.length}/280</small></label><label>Website or creator link<input type="url" value={profileDraft.website} onChange={(event) => setProfileDraft((current) => ({ ...current, website: event.target.value }))} placeholder="https://your-site.example" /></label><label>Profile photo URL<input type="url" value={profileDraft.picture} onChange={(event) => setProfileDraft((current) => ({ ...current, picture: event.target.value }))} placeholder="https://…" /></label><div className="profile-upload-row"><input ref={profileFileInputRef} className="visually-hidden" type="file" accept="image/*" aria-label="Upload profile photo" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const result = await uploadFile(file); const url = result.find(([name]) => name === 'url')?.[1]; if (url) setProfileDraft((current) => ({ ...current, picture: url })); setProfileMessage('Profile photo uploaded. Save profile to publish the change.'); } catch { setProfileMessage('Upload failed. Check your Blossom server settings.'); } finally { event.target.value = ''; } }} /><button className="secondary-button" disabled={isUploading} onClick={() => profileFileInputRef.current?.click()}><Upload size={15} /> {isUploading ? 'Uploading…' : 'Upload profile photo'}</button><span>Profile details are public on Nostr.</span></div><button className="primary-button save-profile-button" disabled={profileSaving || isUploading} onClick={() => void saveProfile()}>{profileSaving ? 'Saving…' : 'Save profile'} <ArrowRight size={15} /></button>{profileMessage && <p className="error-message">{profileMessage}</p>}</div>
-              <div className="safety-reminder"><ShieldCheck size={18} /><div><strong>Share with care</strong><p>Notes and profile details are public on Nostr and may be copied or relayed. Only share media you have the rights and consent to publish.</p></div></div>
-            </> : <div className="creator-login-prompt"><div className="empty-icon"><Wallet size={21} /></div><h3>Connect your Nostr account</h3><p>Sign in to set up your public creator profile, publish posts, and share your profile link.</p><LoginArea /></div>}
-            {user && <div className="creator-share"><div><Link2 size={16} /><div><strong>Share your profile</strong><span>Let people find you across Nostr.</span></div></div><button className="secondary-button" onClick={() => void shareProfile()}>{copied ? <Check size={15} /> : <Copy size={15} />} {copied ? 'Copied' : 'Copy link'}</button></div>}
-          </section>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 };
